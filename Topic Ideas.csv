@@ -1,0 +1,23 @@
+﻿Topic,Presenter,Notes,Presented
+Regular Expressions and You!,,,
+Data-driven Documents,LP,"E.g. R Markdown, Jupyter Notebook. I have a TERM analysis template generated in R for a demo. ",
+Shiny Web Apps in R,AB,,2019-10
+Linux Tips and Tricks,,,
+Excel Tips and Tricks,,,
+Scheduling jobs with cron,NC,,
+Version Control Use Case,SS/PK,,2019-09
+M&V Gear Show and Tell,NC,Requested by Chelsea,
+Parallel Computing,,,
+Best Practices for Documenting Code and Data,,,
+Ecotope Historical Research / Design Projects,Paul,"Paul talk about Stata - what projects/data are in stata?, RBSA what data and where stored?, ",
+VBA Tips and Tricks (101),,Uses. For Word and Excel,
+Shared Computing Resources (compute2),Alen,In house tools vs external tools. ,2
+Current/Recent Research / Design Projects,,"An opportunity to mini-present recent projects one or more of us have worked on. e.g., FMY",1
+"Eppy and OS Measures, SQL and Plotly results viewing","Scott, Hyunwoo",Python scripting for EnergyPlus,3
+Web tools,,"Alen?
+Cheat sheet for Plotly Dash, Shiny, Django/Flask, Tableau, PowerBI, Google Engine, Azure, Sharepoint etc",
+Using CBSA,SS,Querying the access database,
+Data Analysis,,"Types of data analysis, methods, tools, etc",
+Development Enviroments,Everyone,"RStudio, Spyder, Jupyter Notebooks, Visual Studio
+Ease of use, debugging, using multiple files, etc
+Package management",2
