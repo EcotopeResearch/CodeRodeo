@@ -13,6 +13,10 @@ library(crayon)
 zz <<- NULL # File conn
 ll <<- NULL # Log level
 
+# Might need a safe mode that opens and closes the connection for each log... would miss
+# the normal output though, would that be ok? and definetly would miss the error/warning
+# messages, which seems fine for safemode
+
 openLog <- function(fileName, append=TRUE, captureErrors = FALSE, logLevel = "INFO") {
   ll <<- logLevel
   
@@ -21,7 +25,7 @@ openLog <- function(fileName, append=TRUE, captureErrors = FALSE, logLevel = "IN
   sink(zz, type="output", append=append, split=TRUE)
   
   # Due to limitations in we can't split the messages so error messages can only
-  # go to one place.  
+  # go to one place.
   if(captureErrors) sink(zz, type="message", append=append)
 }
 
@@ -43,6 +47,14 @@ closeLog <- function() {
 }
 
 
+setLogLevel <- function(level) {
+  if(level %in% names(logLevels)) {
+    ll <<- level
+  } else {
+    stop(paste0("Level ", level, " not a valid level choice (ERROR, WARN, INFO, DEBUG, FINE)"))
+  }
+}
+
 # Logging functions  ###############################
 logLevels <<- list(ERROR = 10, WARN = 20, INFO = 30, DEBUG = 40, FINE = 50)
 
@@ -57,10 +69,14 @@ logInfo <- function (msg) {
   formatedMessage(paste0("INFO ::", msg), white, "INFO")
 }
 logWarn <- function (msg) {
-  formatedMessage(paste0("WARNING::", msg), yellow, "WARN")
+  formatedMessage(paste0("WARNING ::", msg), yellow, "WARN")
 }
 logError <- function (msg, stop1 = FALSE) {
-  if(stop1) stop(formatedMessage(paste0("ERROR ::", msg), red, "ERROR"))
+  if(stop1) {
+    formatedMessage(paste0("ERROR ::", msg), red, "ERROR")
+    closeLog()
+    stop()
+  }
   formatedMessage(paste0("ERROR ::", msg), red, "ERROR")
 }
 
