@@ -1,0 +1,349 @@
+```{r setup, include = F}
+##########################
+## Set Global Variables ##
+##########################
+
+building.name <- 'Batcave' # Building Name to appear in Report and Graphics
+analyst <- 'Albert'
+sf <- 100000 # conditioned square footage
+```
+
+<!--You don't need to edit this section-->
+---
+title: "`r building.name` TERM Analysis"
+author: `r analyst`
+date: "`r format(Sys.Date(), '%b %d, %Y')`"
+output:
+  html_document:
+    df_print: paged
+  word_document: default
+---
+
+```{r load, include=FALSE, warning=F}
+#############################
+## Intiate Data and Models ##
+#############################
+
+# Load API keys. You should have your own set of API Keys in your Z drive. It's a text file that looks like:
+#    noaa_key = 'skljdflskdjf'
+#    google_key =  'sdfasdfgfhsd'
+#    aqs_key = 'asdfasdag'
+source(EcotopePackage::eco.dir('/storage/server/logan/api_keys')) 
+
+options(scipen = 999)
+
+# use install.packages if you don't have any of these!
+library('rterm')
+library('lubridate')
+library('dplyr')
+library('ggplot2')
+library('EcotopePackage')
+library('tidyr')
+library('kableExtra')
+
+##############################
+### Building Specific Info ###
+###   Make Changes Here!   ###
+##############################
+
+### Read in and clean up metering data ###
+# This section will differ with each input file
+# 
+# You should end up with a data frame for each meter that looks like (plus whatever other columns you find helpful):
+#   Start.Date   End.Date    therms 
+#   2014-02-01 2014-02-28 3576.3229
+#   2014-03-01 2014-03-31 3359.4528
+#   2014-04-01 2014-04-30 2573.6889
+#   2014-05-01 2014-05-31 1814.3041
+#   
+# Note: the energy use column should be called "therms" if it is in therms or "kWh" if it is electric! This is how rterm figures out which it is!
+# If you're working with steam or some other fuel, convert the energy to either therms or kWh and label the columns accordingly
+# The following is a working example from Seattle OSE
+
+library(readxl)
+library(stringr)
+
+metering.data.elec <- read_excel(EcotopePackage::eco.dir('/storage/CONSULT/client/SeattleOSE/Buildings/EA 323 - Building AWC E/bills/AWC_Electricity Use_2012-2017.XLSX'), skip = 1, sheet = 1) %>% filter(Facility == 'Airport Way Ctr - Bldg E') %>% select(-Facility)
+names(metering.data.elec) <- str_extract(names(metering.data.elec), '[A-Za-z]{3} 20[0-9]{2}')
+
+metering.data.gas  <- read_excel(EcotopePackage::eco.dir('/storage/CONSULT/client/SeattleOSE/Buildings/EA 323 - Building AWC E/bills/AWC_Natgas Use_2012-2017.XLSX'), skip = 1, sheet = 1) %>% filter(Facility == 'Airport Way Ctr - Bldg E') %>% select(-Facility)
+names(metering.data.gas) <- str_extract(names(metering.data.gas), '[A-Za-z]{3} 20[0-9]{2}')
+
+# Note the way dates are handled -- often metering data looks like 'june 18', so we have to paste 1 to the front to create the Start Date and use the "days_in_month" function to find the last day of the month for the End Date.
+metering.data.elec <- data.frame(
+    Start.Date = dmy(paste('01', names(metering.data.elec))),
+    Usage      = unlist(metering.data.elec[1,])
+  ) %>% 
+  mutate(End.Date   = dmy(paste(days_in_month(Start.Date), names(metering.data.elec))), meter = 'kwh') 
+
+metering.data.gas <- data.frame(
+    Start.Date = dmy(paste('01', names(metering.data.gas))),
+    Usage      = unlist(metering.data.gas[1,])
+  ) %>% 
+  mutate(End.Date   = dmy(paste(days_in_month(Start.Date), names(metering.data.gas))), meter = 'therms')
+
+metering.data <- rbind(metering.data.elec, metering.data.gas) %>% 
+  filter(Start.Date > ymd('2014-01-01'))
+
+# Remember, you MUST rename variables to therm or kwh or rterm will assume it's kwh, and things will get weird. 
+electric <- metering.data %>% filter(meter == 'kwh') %>% rename(kwh = Usage)
+gas <- metering.data %>% filter(meter == 'therms') %>% rename(therms = Usage)
+
+
+### Set up Models ###  
+# Now set up the models, which we keep in a list for convenience. As set up here, the TERM name and square footage are sourced from the setup block above. 
+# To learn more about how to set these up, see Michael's vignette on Rterm. You will most frequently need to change the addMethod section
+# by adding intercept = TRUE or FALSE, heating = TRUE or FALSE, or cooling = TRUE or FALSE. Intercept forces the model to allow or disallow
+# base loads (the intercept refers to zero). Heating and Cooling force the model to fit or not fit a heating or cooling load. 
+# If you do not specify these, the model will attempt to figure it out by itself--this is usually a good first step that can be overridden if 
+# the model misses something you know to be true. 
+# Side Note: weirdly you can't use the "T"/"F" shorthands here in these functions. You must use the full "TRUE"/"FALSE" names. 
+
+
+mod <- list()
+
+# Electric 
+
+mod[['electric']] <- newTerm(paste0(building.name, ' Electric'), sqft = sf) %>%
+  addData(electric, kwh ~ Start.Date + End.Date, daily = FALSE) %>%
+  addWeather(stationid = 'GHCND:USW00024233', name = 'Sea-Tac') %>%
+  addMethod('cp') %>% 
+  addTmy(c('WASeattle3.tm2')) %>%
+  evaluate()
+
+# Gas 
+
+mod[['gas']] <- newTerm(paste0(building.name, ' Gas'), sqft = sf) %>%
+  addData(gas, therms ~ Start.Date + End.Date, daily = FALSE) %>%
+  addWeather(stationid = 'GHCND:USW00024233', name = 'Sea-Tac') %>%
+  addMethod('cp', intercept = TRUE, heating = TRUE, cooling = FALSE) %>% # set intercept to FALSE to disallow base loads
+  addTmy(c('WASeattle3.tm2')) %>%
+  evaluate()
+
+```
+
+```{r summaries, include=FALSE, warning=F}
+############################
+## Calculate Report Stats ##
+############################
+
+# This section only needs to be changed to add or remove meters. It is currently set up for an Electric and a Gas meter
+summary.stats <- bind_rows(
+  `EUI` = unlist(sapply(mod, function(x)x$models[[1]]$tmyResults$tmyFitted)),
+  `Base Load` = unlist(sapply(mod, function(x)x$models[[1]]$LS[['baseLoad']])),
+  `Cooling Base` = unlist(sapply(mod, function(x)x$models[[1]]$LS[['coolingBase']])),
+  `Cooling Slope` = unlist(sapply(mod, function(x)x$models[[1]]$LS[['coolingSlope']])),
+  `Cooling UA` = 1000 * unlist(sapply(mod, function(x)x$models[[1]]$LS[['coolingSlope']])) * sf / 8760,
+  `Heating Base` = unlist(sapply(mod, function(x)x$models[[1]]$LS[['heatingBase']])),
+  `Heating Slope` = unlist(sapply(mod, function(x)x$models[[1]]$LS[['heatingSlope']])),
+  `Heating UA` =  1000 * unlist(sapply(mod, function(x)x$models[[1]]$LS[['heatingSlope']])) * sf / 8760,
+  `Cooling %` = unlist(sapply(mod, function(x)x$models[[1]]$tmyResults$tmyCooling/(mod[[1]]$models$cp.weather0$tmyResults$tmyFitted+mod[[2]]$models$cp.weather0$tmyResults$tmyFitted)*100)),
+  `Heating %` = unlist(sapply(mod, function(x)x$models[[1]]$tmyResults$tmyHeating/(mod[[1]]$models$cp.weather0$tmyResults$tmyFitted+mod[[2]]$models$cp.weather0$tmyResults$tmyFitted)*100)),
+  .id = 'Stat'
+)
+
+EUI.tot <- rowSums(summary.stats %>% select(-Stat), na.rm = T)[1] %>% format(digits = 1, nsmall = 0)
+BASE.tot <- rowSums(summary.stats %>% select(-Stat), na.rm = T)[2] %>% format(digits = 1, nsmall = 0)
+
+# add or remove meters here
+electric.start <- min(mod[['electric']]$data$dateStart) %>% format('%b %d, %Y')
+electric.stop  <- max(mod[['electric']]$data$dateStart) %>% format('%b %d, %Y')
+gas.start <- min(mod[['gas']]$data$dateStart) %>% format('%b %d, %Y')
+gas.stop  <- max(mod[['gas']]$data$dateStart) %>% format('%b %d, %Y')
+
+```
+
+<!--You don't need to edit this section-->
+### Notes
+`r building.name` <br>
+Conditioned Area: `r sf` square feet <br>
+Time periods: 
+
+* `r electric.start` - `r electric.stop` (Electric)
+* `r gas.start` - `r gas.stop` (Gas)
+
+
+### Results 
+<b>Total EUI</b>: `r EUI.tot`
+
+```{r maintable, echo = F, warning = F, message = F}
+options(knitr.kable.NA = '')
+options(knitr.table.format = 'html') 
+knitr::kable(summary.stats, digits = 1) %>% kable_styling(bootstrap_options = 'striped', full_width = F, position = 'left')
+```
+
+#### Model Parameter Bootstraps
+Values for parameters arrived at resampling base data. We use this to understand the uncertainty in the numbers we calculated. 
+
+```{r bootstraps, echo = F, warning = F, message = F}
+# ###################
+# ## Bootstrapping ##
+# ###################
+# 
+# # This section allows you to understand the uncertainty in the model's predictions. Bootstrapping essentially takes random subsamples
+# # of the data and calculates the statistics again. You can get a sense for how the stat would have changed with a slightly different
+# # sample by looking at this distribution. 
+# #
+# # Note: This section requires you to manually add and remove the specifics of heating, cooling, gas, electric, etc or it will crash. This is 
+# # an opportunity for improvement. 
+# #
+# # If you don't want to use this, you can safely comment out (or delete) this whole r chunk. 
+# 
+pctiles <- c(.05, .10, .50, .90, .95)
+bootstrap.summary <- function(meter, heatCooling, baseSlope){
+  quantile(mod[[meter]]$models$cp.Sea.Tac$bootstraps[paste0(heatCooling, baseSlope)][mod[[meter]]$models$cp.Sea.Tac$bootstraps[paste0(heatCooling, baseSlope)]>0], pctiles)%>%
+    format(digits = 1, nsmall = 1)
+}
+
+bootstrap.results <- data.frame(rbind( # comment out whatever the model doesn't want to use. should automate this eventually
+  c('electric', 'cooling', 'base', bootstrap.summary('electric', 'cooling', 'Base')),
+#  c('electric', 'heating', 'base', bootstrap.summary('electric', 'heating', 'Base')),
+  c('electric', 'cooling', 'slope', bootstrap.summary('electric', 'cooling', 'Slope')),
+#  c('electric', 'heating', 'slope', bootstrap.summary('electric', 'heating', 'Slope')),
+  c('gas', 'heating', 'base', bootstrap.summary('gas', 'heating', 'Base')),
+  c('gas', 'heating', 'slope', bootstrap.summary('gas', 'heating', 'Slope'))
+))
+names(bootstrap.results) <- c('Meter', 'Type', 'Parameter', paste0(100*pctiles, '%'))
+
+knitr::kable(bootstrap.results, digits = 1) %>% kable_styling(bootstrap_options = 'striped', full_width = F, position = 'left')
+# 
+```
+
+<!--Interpret your findings here!-->
+#### Electric meter:
+Interpret the main statistics and the bootstrap results for the audience. For example:
+
+There is no heating load on the electric meter. The cooling base is likely in the low 50s (it's not very certain), with estimates centered on 52F. The cooling slope is small, about 1 EUI/degreeF (+/- 0.3). 
+
+
+#### Gas meter:
+Interpret the main statistics and the bootstrap results for the audience. For example:
+
+The heating base is high: about 64F (+/- 4). The heating slope is about 8.5 EUI/degreeF (+/- a point or two). I ran the model assuming a base load, because there is no obvious leveling off of gas use. if you assume that the base load should be zero then the heating base gets estimated as 70F!
+
+There is a lot of overlap between the heating and cooling base, although the cooling energy use is quite small. 
+
+```{r graphics, echo = F, warning = F, message = F}
+###############
+## Graphics  ##
+###############
+
+# Do heating/cooling bases overlap?
+# This is a non-essential graphic. You can comment down the following 12 lines if you don't want to use it or don't have both a cooling and heating load:
+overlap <- data.frame(
+  heating = mod[['gas']]$models$cp.Sea.Tac$bootstrap$heatingBase,
+  cooling = mod[['electric']]$models$cp.Sea.Tac$bootstrap$coolingBase
+  ) %>%
+  gather(type, value)
+
+p <- ggplot(overlap) + 
+  geom_density(aes(value, fill = type), alpha = .5) + 
+  scale_fill_manual(values = c('blue','red')) + 
+  theme_bw() + 
+  ggtitle('Possible Values for Heating and Cooling Base') + ylab('Probability') + xlab('Heating/Cooling Base Temperature')
+p
+ggsave(p, filename = paste0(building.name, ' Heating vs Cooling Base.png'))
+
+
+
+# Measured Values data frames
+dfGas <- mod[['gas']]$models[[1]]$data
+dfGas$type <- 'Gas'
+dfElec <- mod[['electric']]$models[[1]]$data
+dfElec$type <- 'Electric'
+dfAll <- plyr::rbind.fill(dfGas, dfElec)
+
+dfGas <- mod[['gas']]$models[[1]]$dfFitted
+dfGas$type <- 'Gas'
+dfElec <- mod[['electric']]$models[[1]]$dfFitted
+dfElec$type <- 'Electric'
+dfFittedAll <- plyr::rbind.fill(dfGas, dfElec)
+
+dfAll$type <- factor(dfAll$type, levels = c('Gas','Electric'))
+allPlot <- ggplot(dfAll) + theme_bw() +
+  geom_point(aes(temp, dailyEnergy, col = type), alpha = .6) +
+  geom_line(data = dfFittedAll, aes(temp, fitted, col = type)) +
+  ggtitle(paste0(building.name, ' Energy Use by Outdoor Temperature')) +
+  xlab('Monthly Average Outdoor Temperature (F)') +
+  ylab('Annualized EUI (kbtu/sqft/year)') +
+  scale_x_continuous(breaks = seq(35, 75, by = 5)) +
+  scale_colour_manual(name = 'Meter', values = c('red', 'blue')) + 
+  ggtitle(paste0(building.name, ' Energy vs Temperature'))
+allPlot
+ggsave(allPlot, filename = paste0(building.name, ' Energy Use by Outdoor Temperature.png'))
+```
+
+
+```{r, echo = F, warning = F, message = F}
+
+cooling.summary <- function(mod){
+  df <- mod$models[[1]]$data 
+  tot.load <- mean(df$dailyEnergy) %>% format(digits = 2, nsmall = 1)
+  df <- df[df$xCooling > 0, ]
+  cooling.load <- mean(df$dailyEnergy) %>% format(digits = 2, nsmall = 0)
+  base <- mod$models[[1]]$LS['coolingBase'] %>% format(digits = 2, nsmall = 0)
+  cooling.mod <- lm(data = df, dailyEnergy ~ xCooling) 
+  r2 <- summary(cooling.mod)$r.squared %>% format(digits = 2, nsmall = 2)
+  slope <- summary(cooling.mod)$coef['xCooling', 'Estimate'] %>% format(digits = 2, nsmall = 1)
+  
+  paste0('tbal=', base, '\n\nr\u00b2=', r2, '\n\nslope=', slope, '\n\ncoolingLoad=', cooling.load, '\n\ntotalLoad=', tot.load)
+}
+
+heating.summary <- function(mod){
+  df <- mod$models[[1]]$data 
+  tot.load <- mean(df$dailyEnergy) %>% format(digits = 2, nsmall = 1)
+  df <- df[df$xHeating > 0, ]
+  heating.load <- mean(df$dailyEnergy) %>% format(digits = 2, nsmall = 0)
+  base <- mod$models[[1]]$LS['heatingBase'] %>% format(digits = 2, nsmall = 0)
+  heating.mod <- lm(data = df, dailyEnergy ~ xHeating) 
+  r2 <- summary(heating.mod)$r.squared %>% format(digits = 2, nsmall = 2)
+  slope <- summary(heating.mod)$coef['xHeating', 'Estimate'] %>% format(digits = 2, nsmall = 1)
+  
+  paste0('tbal=', base, '\n\nr\u00b2=', r2, '\n\nslope=', slope, '\n\nheatingLoad=', heating.load, '\n\ntotalLoad=', tot.load)
+}
+
+```
+
+<!--You need to change this section depending on whether you have a cooling or heating load to summarize on each meter!-->
+#### Heating/Cooling Fits
+**Electric Cooling Fit**
+
+`r cooling.summary(mod[['electric']])`
+
+**Gas Heating Fit**
+
+`r heating.summary(mod[['gas']])`
+
+
+```{r indvplots, echo = F, warning = F, message = F}
+# also save off individual plots for each 
+
+p <- plot(mod[['electric']]) + ggtitle(paste0(building.name, ' Electric Energy vs Temperature'))
+p
+ggsave(p, filename = paste0(building.name, ' Energy Use by Outdoor Temperature - Electric.png'))
+
+p <- plot(mod[['gas']]) + ggtitle(paste0(building.name, ' Gas Energy vs Temperature'))
+ggsave(p, filename = paste0(building.name, ' Energy Use by Outdoor Temperature - Gas.png'))
+p
+
+```
+
+<!--Interpret your findings in this section-->
+#### Residuals over time
+The residual plot allows us to see if the model works better in a certain time period. If the dots don't look to be randomly sprinkled around a horizontal line, you may want to rethink the time period you're examining, as there may have been a change in the way the building operates. This is also a good way to identify billing cycles where something really weird happened (outliers).
+
+I provide a short summary of what I see for for the audience here. For example:
+
+Might be a gradual increase in electricity usage over time, but keep in mind that it is quite small to begin with. I don't see anything of interest in the gas data.
+
+```{r residplots, echo = F, warning = F, message = F}
+
+plot(mod[['electric']], 'resids')
+plot(mod[['gas']], 'resids')
+
+```
+
+
+
+
+

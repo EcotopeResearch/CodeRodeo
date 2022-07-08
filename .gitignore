@@ -12,7 +12,6 @@ __pycache__/
 *.so
 
 *~*
-*.html
 
 # Distribution / packaging
 .Python
